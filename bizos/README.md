@@ -27,7 +27,7 @@ capable every week you use it.
 
 - [`BIZOS_DESIGN.md`](./BIZOS_DESIGN.md) — the full design document
   (architecture, message format, trust & safety model, MVP plan).
-  Reviewed adversarially by multiple AI models; v1.1 integrates the findings.
+  Reviewed adversarially by multiple AI models; v1.2 integrates the findings.
 
 ## Status
 

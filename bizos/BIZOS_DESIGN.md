@@ -1,5 +1,7 @@
 # BizOS — Rules-Driven Multi-Agent Business Operating System
-### Design Document v1.0 · Engin Kantar · Claude Impact Lab, Seattle
+### Design Document v1.2 · Engin Kantar · Claude Impact Lab, Seattle
+
+> **v1.2 (night before build day):** one policy source — the Policy Gate now compiles from the SAME structured block the model reads, so rule text and code limits can never drift; SQLite-first reliability (outbox, restart-safe, honest at-least-once); approvals bind to draft+rules+recipient and the gate re-runs at send; honest privacy & cost framing; final MVP stack and build order.
 
 > **One-liner:** GStack gives software teams a constitution (CLAUDE.md) that every AI coding agent obeys. **BizOS gives a small business the same thing** — every department runs on an AI agent that loads its rules from a fixed, human-editable file. The owner writes rules once; the AI staff follows them forever.
 
@@ -37,6 +39,9 @@ owner: engin@company.com
 version: 3            # bump on every edit — agents log which version they used
 updated: 2026-10-24
 escalate_to: "+1-206-XXX-XXXX"   # human fallback
+policy:               # MACHINE-READABLE — the single source of truth
+  REFUND-CAP:      { max_amount_cents: 20000, above: block }
+  REFUND-APPROVAL: { over_cents: 12000, action: draft_for_approval }
 ---
 
 ## IDENTITY
@@ -67,6 +72,8 @@ You are the accounting department of <Company>. Formal, precise, never guess num
 ```
 
 > **Enforcement note (v1.1):** HARD RULES are not enforced by the model *reading* them. They are compiled into a **Policy Gate** — deterministic code checks (amount caps, data-access scopes, send permissions) that run on every outbound action. **The model proposes; the gate disposes.** Rule text is the source of truth; code is the enforcer. A rule citation proves the agent *referenced* a rule — the gate proves the action *obeyed* it.
+>
+> **One source of truth (v1.2):** if prose rules and gate config lived in two places, an owner editing the Markdown would change what the *model* believes while the *gate* kept enforcing the old limit — two decision loops, and the demo's core promise dies. So the gate's limits are **compiled from the `policy:` block of the same rules file** the agent reads; the prose HARD RULES are the human-readable mirror of that block, and an edit changes both at once. Further hardening: money sentences in outbound drafts are rendered from gate-validated fields (draft text is also scanned for amounts above the validated one); cited rule IDs are verified to exist in the active rules version; agents never hold a send or payment tool — only the gate's narrow API does.
 
 **Why files, not a database UI:** the owner edits Markdown (or dictates changes to the Orchestrator: *"from today, free shipping over $75"* → agent patches the file, bumps version, logs the diff). Git-style history = free audit trail. This is exactly the CLAUDE.md pattern, applied to business ops.
 
@@ -161,7 +168,7 @@ Every message, from any channel, is normalized into **one JSON shape** at ingres
 
 Key properties (v1.1):
 - **Case model:** every message attaches to a persistent `case_id` (conversation + pending transactions). One request may spawn tasks across several domains ("order is late → cancel → or replace and quote the price difference" touches Support + Accounting + Sales), but **one Case Owner speaks to the customer**; specialists return results to it — no contradictory replies.
-- **Real idempotency:** the channel-native source message id is stored UNIQUE in Postgres (Redis is only a fast cache, not the guarantee). **Transaction ids are separate from message ids**, and external calls (e.g. the refund API) carry the same idempotency key — a crash between "refund executed" and "result recorded" can never double-refund on retry. Failed jobs land in a durable queue with retry + dead-letter review.
+- **Real idempotency (v1.2):** the channel-native source id is stored `UNIQUE(channel, source_message_id)` — SQLite in the MVP (WAL on), Postgres in production; Redis, if ever added, is a cache, never the guarantee. Outbound replies live in a small **outbox** table (`pending → processing → sent | failed | delivery_unknown`) with bounded retries, and pending work survives a restart. **Transaction ids are separate from message ids**, and external calls (e.g. a refund API) carry the same idempotency key — a crash between "refund executed" and "result recorded" can never double-refund on retry. Sending through a third-party provider is not one transaction with the local write, so the honest promise is **at-least-once with visible state**, never "exactly once".
 - **Traceable:** `rules_version` + `rule_citations` + gate verdict on every action — the compliance story.
 - **Channel-symmetric:** the reply exits where the question entered.
 
@@ -203,22 +210,28 @@ Owner's daily surface = **one approval queue + one audit feed.** The promise is 
 
 **Approval SLA (v1.1):** every held item has a priority and a timeout. No owner response in 2h → the customer gets a polite hold message and the reminder escalates (push → SMS); critical items ring the phone. An unanswered queue never silently drops a customer.
 
+**Approval binding (v1.2):** an approval references `draft_version + rules_version + recipient + channel + action_type`. If any of these changes, the approval is void and the item returns to the queue. The Policy Gate re-runs at send time, a double-click cannot create a second send job, and the recipient always comes from the verified channel record — never from model output. In the MVP the button is labeled **"Approve reply"**: it approves sending a message, it never executes a payment.
+
 **Honest expectation:** in week one, rule coverage is low, so the queue is busy — but approving a ready draft is ~10x faster than composing from scratch, and every rejection writes a rule, so the queue shrinks weekly. **Success metrics:** owner-minutes per day, time-to-resolution, error/reopen rate — not just the auto-reply percentage.
 
 ---
 
-## 7. Hackathon MVP (buildable in one day)
+## 7. Hackathon MVP (buildable in one day — final, agreed with the team)
 
-**Cut to the bone — demo path:**
-1. `/api/inbox` webhook (one endpoint, envelope above) — *2 hrs, pattern already exists in my notification service*
-2. Orchestrator classify via Claude → route JSON — *1 hr*
-3. TWO specialists only: **Sales** + **Support**, each with a real rules file written live on stage — *2 hrs*
-4. **Academy agent** answering "I'm the new hire, how do refunds work?" from the same files — *1 hr, pure prompt*
-5. Simple inbox UI (teammate) + approval queue — *parallel*
-6. **Policy Gate stub:** one function enforcing the $200 refund cap in code — *30 min*
-7. **Demo script:** send a WhatsApp-style message → watch it route → auto-answer with rule citation → EDIT the rules file live, resend, answer changes (*wow #1: edit-and-it-obeys*) → then ask the agent for a $500 refund → **the gate blocks it in code even though the model tried** (*wow #2: AI can be fooled, the gate can't*).
+**Stack (final):** Node + TypeScript · **SQLite, one file** (WAL, `UNIQUE(channel, source_message_id)`, outbox) · Claude API — **Haiku** routes, **Sonnet** drafts · rules = plain `.md` in the repo · MIT license. All code written fresh at the event. Install test: `git clone && npm install && npm start`, working in under 10 minutes — **proven on a second machine by mid-afternoon**, not discovered broken at submission time.
 
-**Stack:** Node/TS or Go webhook core · Postgres (messages, audit) · Redis (idempotency) · Claude API (orchestrator + agents) · rules = plain .md in a repo.
+**Build order (demo path):**
+1. `/api/inbox` webhook + **chat widget** ingress (envelope above). Email is the positioning, not the first wire: a single-provider adapter only after the mid-day checkpoint; fallback = importing a `.eml` file through the same flow, labeled honestly as an import.
+2. Orchestrator classify (Haiku) → route JSON.
+3. TWO specialists: **Sales** + **Support** (Sonnet), each with a real rules file. `templates/` ships industry starter packs (coffee shop · machine shop · engineering firm) — one codebase, any business; pick a template, edit the limits, you're live.
+4. **Policy Gate:** caps compiled from the rules files' `policy:` blocks — no separate config to drift.
+5. One owner screen: cases + approval queue + rules editor. UI polls every 2s — no SSE in v1.
+6. Sales bonus beat if time allows: a case in `quote_sent` → **"Generate follow-up"** button → follow-up draft citing the rule (no scheduler in v1 — the honest version of "follow-up engine").
+7. **Academy agent = stretch goal, first thing cut.**
+
+**Demo script:** message arrives in the widget → routes → draft with rule citation → owner EDITS the rules file live (v3→v4), resend — **the answer AND the gate limit change together, because both compile from the same file** (*wow #1*) → a labeled "unsafe suggestion" test input asks for a $500 refund → **the gate blocks it in code** (*wow #2: we don't rely on fooling the model live — the fixture proves the gate, every time*).
+
+**Roadmap (said on a slide, not built):** email/WhatsApp adapters · edge deploy (Cloudflare Workers) + Oracle Always Free archive · Academy + role-template library · trust-ladder autonomy · cost panel — daily budget cap first; cache savings measured via `cache_read_input_tokens`, never promised unconditionally.
 
 ---
 
@@ -228,6 +241,7 @@ Owner's daily surface = **one approval queue + one audit feed.** The promise is 
 - **Novel primitive:** not "another AI chatbot" — a **rules file format** businesses own, version, and audit. The CLAUDE.md idea, exported from software into Main Street.
 - **Trust story judges ask about:** versioned rules + **code-enforced hard limits (Policy Gate)** + full audit trail = the honest promise is not "AI never forgets" but *"rules are versioned, critical limits are enforced in software, and every action is traceable."*
 - **Grows itself:** every unanswerable question becomes a rule. The business gets more automated every week it runs.
+- **Honest privacy & cost framing (v1.2):** app, rules, and records run under the business's control — their machine, their API key, one SQLite file; the content needed to draft a reply goes to the Claude API. "Free" means the source code; API usage is metered. The differentiation, in three phrases: **owned & versioned policy · code-enforced limits · every action traceable to a rules version.** Self-hosting supports that story; it is not a "nothing ever leaves" claim.
 
 ---
 
